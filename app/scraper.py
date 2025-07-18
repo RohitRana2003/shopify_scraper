@@ -1,90 +1,43 @@
+import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-import re
+from .models import ContactInfo, BrandData
 
-def get_full_url(base, path):
-    return urljoin(base, path)
+def fetch_website(url: str) -> BeautifulSoup:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    return BeautifulSoup(response.text, "html.parser")
 
-def get_products(base_url):
-    try:
-        res = requests.get(get_full_url(base_url, "/products.json"), timeout=10)
-        if res.status_code == 200:
-            return res.json().get('products', [])
-    except:
-        return []
-    return []
+def extract_emails(text: str) -> list:
+    return list(set(re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)))
 
-def extract_policy_text(base_url, keyword):
-    try:
-        res = requests.get(base_url, timeout=10)
-        soup = BeautifulSoup(res.text, 'lxml')
-        for a in soup.find_all('a', href=True):
-            if keyword in a['href'].lower():
-                link = urljoin(base_url, a['href'])
-                policy_res = requests.get(link)
-                return BeautifulSoup(policy_res.text, 'lxml').get_text(separator="\n")
-    except:
-        return ""
-    return ""
+def extract_phones(text: str) -> list:
+    return list(set(re.findall(r"\+?\d[\d\s\-\(\)]{7,}\d", text)))
 
-def extract_home_products(base_url):
-    try:
-        res = requests.get(base_url, timeout=10)
-        soup = BeautifulSoup(res.text, 'lxml')
-        products = []
-        for a in soup.find_all('a', href=True):
-            if '/products/' in a['href']:
-                products.append(urljoin(base_url, a['href']))
-        return list(set(products))
-    except:
-        return []
-
-def extract_faqs(base_url):
-    try:
-        res = requests.get(base_url, timeout=10)
-        soup = BeautifulSoup(res.text, 'lxml')
-        faqs = []
-        for section in soup.find_all(['details', 'div']):
-            text = section.get_text(separator="\n")
-            if "?" in text:
-                qas = re.findall(r'(Q.*?)\n(A.*?)\n', text, re.DOTALL)
-                for q, a in qas:
-                    faqs.append({'question': q.strip(), 'answer': a.strip()})
-        return faqs
-    except:
-        return []
-
-def extract_socials(soup):
-    links = { "instagram": "", "facebook": "", "tiktok": "", "twitter": "" }
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        for key in links:
-            if key in href:
-                links[key] = href
-    return links
-
-def extract_contact_details(soup):
+def extract_contact_details(soup: BeautifulSoup) -> ContactInfo:
     text = soup.get_text()
-    emails = re.findall(r'[\w\.-]+@[\w\.-]+', text)
-    phones = re.findall(r'\+?\d[\d -]{8,}\d', text)
-    return list(set(emails)), list(set(phones))
+    return ContactInfo(
+        emails=extract_emails(text),
+        phone_numbers=extract_phones(text)
+    )
 
-def extract_about_and_links(base_url):
-    try:
-        res = requests.get(base_url, timeout=10)
-        soup = BeautifulSoup(res.text, 'lxml')
-        about_text = ""
-        for a in soup.find_all('a', href=True):
-            if 'about' in a['href'].lower():
-                link = urljoin(base_url, a['href'])
-                about_res = requests.get(link)
-                about_text = BeautifulSoup(about_res.text, 'lxml').get_text(separator="\n")
-                break
-        links = {}
-        for a in soup.find_all('a', href=True):
-            if any(x in a['href'].lower() for x in ['track', 'blog', 'contact']):
-                links[a.get_text(strip=True)] = urljoin(base_url, a['href'])
-        return about_text, links
-    except:
-        return "", {}
+def extract_brand_data(url: str) -> BrandData:
+    soup = fetch_website(url)
+    title = soup.title.string.strip() if soup.title else "No Title Found"
+    desc_tag = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
+    description = desc_tag["content"].strip() if desc_tag and desc_tag.get("content") else "No Description Found"
+    logo_tag = soup.find("link", rel="icon") or soup.find("link", rel="shortcut icon")
+    logo = logo_tag["href"] if logo_tag and logo_tag.get("href") else ""
+
+    if logo and not logo.startswith("http"):
+        logo = url.rstrip("/") + "/" + logo.lstrip("/")
+
+    contact_info = extract_contact_details(soup)
+
+    return BrandData(
+        title=title,
+        description=description,
+        logo=logo,
+        contact_details=contact_info
+    )
